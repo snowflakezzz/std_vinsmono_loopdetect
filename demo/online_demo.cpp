@@ -1,9 +1,4 @@
 #include <Eigen/Geometry>
-#include <gtsam/geometry/Pose3.h>
-#include <gtsam/nonlinear/ISAM2.h>
-#include <gtsam/nonlinear/Values.h>
-#include <gtsam/slam/BetweenFactor.h>
-#include <gtsam/slam/PriorFactor.h>
 #include <mutex>
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
@@ -88,19 +83,6 @@ bool syncPackages(PointCloud::Ptr &cloud, Eigen::Affine3d &pose) {
   }
 
   return true;
-}
-
-void update_poses(const gtsam::Values &estimates,
-                  std::vector<Eigen::Affine3d> &poses) {
-  assert(estimates.size() == poses.size());
-
-  poses.clear();
-
-  for (int i = 0; i < estimates.size(); ++i) {
-    auto est = estimates.at<gtsam::Pose3>(i);
-    Eigen::Affine3d est_affine3d(est.matrix());
-    poses.push_back(est_affine3d);
-  }
 }
 
 void visualizeLoopClosure(
@@ -198,40 +180,12 @@ int main(int argc, char **argv) {
       nh.advertise<visualization_msgs::MarkerArray>("/loop_closure_constraints",
                                                     10);
 
-  ros::Subscriber subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>(
+  ros::Subscriber subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>(     // 接收去畸变的帧
       "/cloud_registered_body", 100, laserCloudHandler);
-  ros::Subscriber subOdom =
-      nh.subscribe<nav_msgs::Odometry>("/Odometry", 100, OdomHandler);
+  ros::Subscriber subOdom =                                                  // 接收里程计位姿结果
+      nh.subscribe<nav_msgs::Odometry>("/aft_mapped_to_init", 100, OdomHandler);
 
   STDescManager *std_manager = new STDescManager(config_setting);
-
-  gtsam::Values initial;
-  gtsam::NonlinearFactorGraph graph;
-
-  // https://github.com/TixiaoShan/LIO-SAM/blob/6665aa0a4fcb5a9bb3af7d3923ae4a035b489d47/src/mapOptmization.cpp#L1385
-  gtsam::noiseModel::Diagonal::shared_ptr odometryNoise =
-      gtsam::noiseModel::Diagonal::Variances(
-          (gtsam::Vector(6) << 1e-6, 1e-6, 1e-6, 1e-4, 1e-4, 1e-4).finished());
-
-  gtsam::noiseModel::Diagonal::shared_ptr priorNoise =
-      gtsam::noiseModel::Diagonal::Variances(
-          (gtsam::Vector(6) << 1e-2, 1e-2, M_PI * M_PI, 1e8, 1e8, 1e8)
-              .finished()); // rad*rad, meter*meter
-
-  double loopNoiseScore = 1e-1;
-  gtsam::Vector robustNoiseVector6(
-      6); // gtsam::Pose3 factor has 6 elements (6D)
-  robustNoiseVector6 << loopNoiseScore, loopNoiseScore, loopNoiseScore,
-      loopNoiseScore, loopNoiseScore, loopNoiseScore;
-  gtsam::noiseModel::Base::shared_ptr robustLoopNoise =
-      gtsam::noiseModel::Robust::Create(
-          gtsam::noiseModel::mEstimator::Cauchy::Create(1),
-          gtsam::noiseModel::Diagonal::Variances(robustNoiseVector6));
-
-  gtsam::ISAM2Params parameters;
-  parameters.relinearizeThreshold = 0.01;
-  parameters.relinearizeSkip = 1;
-  gtsam::ISAM2 isam(parameters);
 
   size_t cloudInd = 0;
   size_t keyCloudInd = 0;
@@ -245,7 +199,6 @@ int main(int argc, char **argv) {
   PointCloud::Ptr key_cloud(new PointCloud);
 
   bool has_loop_flag = false;
-  gtsam::Values curr_estimate;
 
   Eigen::Affine3d last_pose;
   last_pose.setIdentity();
@@ -263,7 +216,7 @@ int main(int argc, char **argv) {
       down_sampling_voxel(*current_cloud_body, 0.5);
       cloud_vec.push_back(current_cloud_body);
       pose_vec.push_back(pose);
-      origin_pose_vec.push_back(pose);
+      origin_pose_vec.push_back(pose);          // 存储帧与odom位姿的对应关系
       PointCloud origin_cloud;
       pcl::transformPointCloud(*current_cloud_body, origin_cloud,
                                origin_estimate_affine3d);
@@ -285,18 +238,6 @@ int main(int argc, char **argv) {
       pubOdomOrigin.publish(odom);
 
       *key_cloud += *current_cloud_world;
-      initial.insert(cloudInd, gtsam::Pose3(pose.matrix()));
-
-      if (!cloudInd) {
-        graph.add(gtsam::PriorFactor<gtsam::Pose3>(
-            0, gtsam::Pose3(pose.matrix()), odometryNoise));
-      } else {
-        auto prev_pose = gtsam::Pose3(origin_pose_vec[cloudInd - 1].matrix());
-        auto curr_pose = gtsam::Pose3(pose.matrix());
-        graph.add(gtsam::BetweenFactor<gtsam::Pose3>(
-            cloudInd - 1, cloudInd, prev_pose.between(curr_pose),
-            odometryNoise));
-      }
 
       // check if keyframe
       if (cloudInd % config_setting.sub_frame_num_ == 0 && cloudInd != 0) {
@@ -376,11 +317,6 @@ int main(int argc, char **argv) {
 
             loop_container.push_back({tar_frame, src_frame});
 
-            graph.add(gtsam::BetweenFactor<gtsam::Pose3>(
-                tar_frame, src_frame,
-                gtsam::Pose3(tar_pose.matrix())
-                    .between(gtsam::Pose3(src_pose_refined.matrix())),
-                robustLoopNoise));
           }
 
           pcl::toROSMsg(*std_manager->key_cloud_vec_[search_result.first],
@@ -398,22 +334,6 @@ int main(int argc, char **argv) {
         key_cloud->clear();
         ++keyCloudInd;
       }
-      isam.update(graph, initial);
-      isam.update();
-
-      if (has_loop_flag) {
-        isam.update();
-        isam.update();
-        isam.update();
-        isam.update();
-        isam.update();
-      }
-
-      graph.resize(0);
-      initial.clear();
-
-      curr_estimate = isam.calculateEstimate();
-      update_poses(curr_estimate, pose_vec);
 
       auto latest_estimate_affine3d = pose_vec.back();
 

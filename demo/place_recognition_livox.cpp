@@ -51,9 +51,9 @@ int main(int argc, char **argv) {
 
   ros::Rate loop(500);
   ros::Rate slow_loop(10);
-  std::vector<std::pair<Eigen::Vector3d, Eigen::Matrix3d>> poses_vec;
-  std::vector<double> times_vec;
-  load_pose_with_time(pose_path, poses_vec, times_vec);
+  std::vector<std::pair<Eigen::Vector3d, Eigen::Matrix3d>> poses_vec;   // 里程计位姿
+  std::vector<double> times_vec;                          // 里程计时间戳
+  load_pose_with_time(pose_path, poses_vec, times_vec);   // 从文件中加载位姿
   std::cout << "Sucessfully load pose with number: " << poses_vec.size()
             << std::endl;
 
@@ -67,7 +67,9 @@ int main(int argc, char **argv) {
   std::vector<double> descriptor_time;
   std::vector<double> querying_time;
   std::vector<double> update_time;
-  int triggle_loop_num = 0;
+  int triggle_loop_num = 0;       // 检测到的回环数
+  int correct_loop = 0;           // 检测到的正确回环数
+  std::vector<Eigen::Vector3d> key_poses_vec;   // 存储kecloud对应的里程计位置
 
   std::fstream file_;
   file_.open(bag_path, std::ios::in);
@@ -85,7 +87,7 @@ int main(int argc, char **argv) {
   types.push_back(std::string("sensor_msgs/PointCloud2"));
   rosbag::View view(bag, rosbag::TypeQuery(types));
 
-  while (ros::ok()) {
+  while (ros::ok()) {   // 从bag包中提取types类型话题
     BOOST_FOREACH (rosbag::MessageInstance const m, view) {
       sensor_msgs::PointCloud2::ConstPtr cloud_ptr =
           m.instantiate<sensor_msgs::PointCloud2>();
@@ -94,7 +96,9 @@ int main(int argc, char **argv) {
         pcl::PCLPointCloud2 pcl_pc;
         pcl_conversions::toPCL(*cloud_ptr, pcl_pc);
         pcl::PointCloud<pcl::PointXYZI> cloud;
-        pcl::fromPCLPointCloud2(pcl_pc, cloud);
+        pcl::fromPCLPointCloud2(pcl_pc, cloud);     // 数据类型转换
+
+        // 将点云转到世界坐标系下
         int pose_index = findPoseIndexUsingTime(times_vec, laser_time);
         Eigen::Vector3d translation = poses_vec[pose_index].first;
         Eigen::Matrix3d rotation = poses_vec[pose_index].second;
@@ -104,6 +108,8 @@ int main(int argc, char **argv) {
           cloud.points[i] = vec2point(pv);
         }
         down_sampling_voxel(cloud, config_setting.ds_size_);
+
+        // step1 累积多帧扫描构建关键帧
         for (auto pv : cloud.points) {
           temp_cloud->points.push_back(pv);
         }
@@ -112,17 +118,20 @@ int main(int argc, char **argv) {
         if (cloudInd % config_setting.sub_frame_num_ == 0 && cloudInd != 0) {
           std::cout << "Key Frame id:" << keyCloudInd
                     << ", cloud size: " << temp_cloud->size() << std::endl;
-          // step1. Descriptor Extraction
+          key_poses_vec.push_back(translation);
+
+          // step2 提取三角描述子
           auto t_descriptor_begin = std::chrono::high_resolution_clock::now();
           std::vector<STDesc> stds_vec;
-          std_manager->GenerateSTDescs(temp_cloud, stds_vec);
+          std_manager->GenerateSTDescs(temp_cloud, stds_vec);   // 生成描述子
           auto t_descriptor_end = std::chrono::high_resolution_clock::now();
           descriptor_time.push_back(
               time_inc(t_descriptor_end, t_descriptor_begin));
-          // step2. Searching Loop
+
+          // step2. Searching Loop 回环搜索
           auto t_query_begin = std::chrono::high_resolution_clock::now();
-          std::pair<int, double> search_result(-1, 0);
-          std::pair<Eigen::Vector3d, Eigen::Matrix3d> loop_transform;
+          std::pair<int, double> search_result(-1, 0);                      // 存储回环帧 及回环分数
+          std::pair<Eigen::Vector3d, Eigen::Matrix3d> loop_transform;       // 回环帧的位姿差异
           loop_transform.first << 0, 0, 0;
           loop_transform.second = Eigen::Matrix3d::Identity();
           std::vector<std::pair<STDesc, STDesc>> loop_std_pair;
@@ -180,6 +189,12 @@ int main(int argc, char **argv) {
             pubMatchedCorner.publish(pub_cloud);
             publish_std_pairs(loop_std_pair, pubSTD);
             slow_loop.sleep();
+
+            // 通过里程计位置差计算是否为正确匹配
+            auto loop_trans = key_poses_vec[search_result.first];
+            double error = (loop_trans - translation).norm();
+            if(error < 20)
+              correct_loop++;
             // getchar();
           }
           temp_cloud->clear();
@@ -211,7 +226,7 @@ int main(int argc, char **argv) {
         std::accumulate(update_time.begin(), update_time.end(), 0) * 1.0 /
         update_time.size();
     std::cout << "Total key frame number:" << keyCloudInd
-              << ", loop number:" << triggle_loop_num << std::endl;
+              << ", loop number:" << triggle_loop_num << ", correct number: " << correct_loop << std::endl;     // triggle_loop_num 检测到的回环数
     std::cout << "Mean time for descriptor extraction: " << mean_descriptor_time
               << "ms, query: " << mean_query_time
               << "ms, update: " << mean_update_time << "ms, total: "

@@ -309,28 +309,26 @@ void STDescManager::GenerateSTDescs(
     pcl::PointCloud<pcl::PointXYZI>::Ptr &input_cloud,
     std::vector<STDesc> &stds_vec) {
 
-  // step1, voxelization and plane dection
+  // step1, voxelization and plane dection 体素划分及平面检测
   std::unordered_map<VOXEL_LOC, OctoTree *> voxel_map;
-  init_voxel_map(input_cloud, voxel_map);
+  init_voxel_map(input_cloud, voxel_map);     // 将输入点云体素化
   pcl::PointCloud<pcl::PointXYZINormal>::Ptr plane_cloud(
       new pcl::PointCloud<pcl::PointXYZINormal>);
-  getPlane(voxel_map, plane_cloud);
-  // std::cout << "[Description] planes size:" << plane_cloud->size() <<
-  // std::endl;
+  getPlane(voxel_map, plane_cloud);           // 存储所有标记为平面的体素的中心点
+
   plane_cloud_vec_.push_back(plane_cloud);
 
   // step2, build connection for planes in the voxel map
+  // step2 通过边缘增长将表示相同平面的体素合并
   build_connection(voxel_map);
 
-  // step3, extraction corner points
+  // step3, extraction corner points 提取关键点
   pcl::PointCloud<pcl::PointXYZINormal>::Ptr corner_points(
       new pcl::PointCloud<pcl::PointXYZINormal>);
   corner_extractor(voxel_map, input_cloud, corner_points);
   corner_cloud_vec_.push_back(corner_points);
-  // std::cout << "[Description] corners size:" << corner_points->size()
-  //           << std::endl;
 
-  // step4, generate stable triangle descriptors
+  // step4, generate stable triangle descriptors 三角描述子构建
   stds_vec.clear();
   build_stdesc(corner_points, stds_vec);
   // std::cout << "[Description] stds size:" << stds_vec.size() << std::endl;
@@ -353,12 +351,14 @@ void STDescManager::SearchLoop(
     return;
   }
   // step1, select candidates, default number 50
+  // step1 选择用于回环检测的候选帧
   auto t1 = std::chrono::high_resolution_clock::now();
   std::vector<STDMatchList> candidate_matcher_vec;
   candidate_selector(stds_vec, candidate_matcher_vec);
 
   auto t2 = std::chrono::high_resolution_clock::now();
   // step2, select best candidates from rough candidates
+  // step2 获取最优回环
   double best_score = 0;
   unsigned int best_candidate_id = -1;
   unsigned int triggle_candidate = -1;
@@ -368,6 +368,7 @@ void STDescManager::SearchLoop(
     double verify_score = -1;
     std::pair<Eigen::Vector3d, Eigen::Matrix3d> relative_pose;
     std::vector<std::pair<STDesc, STDesc>> sucess_match_vec;
+    // step2.1 计算回环分数
     candidate_verify(candidate_matcher_vec[i], verify_score, relative_pose,
                      sucess_match_vec);
     if (verify_score > best_score) {
@@ -404,9 +405,9 @@ void STDescManager::AddSTDescs(const std::vector<STDesc> &stds_vec) {
     position.x = (int)(single_std.side_length_[0] + 0.5);
     position.y = (int)(single_std.side_length_[1] + 0.5);
     position.z = (int)(single_std.side_length_[2] + 0.5);
-    position.a = (int)(single_std.angle_[0]);
-    position.b = (int)(single_std.angle_[1]);
-    position.c = (int)(single_std.angle_[2]);
+    // position.a = (int)(single_std.angle_[0]);
+    // position.b = (int)(single_std.angle_[1]);
+    // position.c = (int)(single_std.angle_[2]);
     auto iter = data_base_.find(position);
     if (iter != data_base_.end()) {
       data_base_[position].push_back(single_std);
@@ -458,7 +459,7 @@ void STDescManager::init_voxel_map(
   //   std::cout << "omp num:" << MP_PROC_NUM << std::endl;
   // #pragma omp parallel for
   // #endif
-  for (int i = 0; i < index.size(); i++) {
+  for (int i = 0; i < index.size(); i++) {    // 为啥要两次循环？
     iter_list[i]->second->init_octo_tree();
   }
   // std::cout << "voxel num:" << index.size() << std::endl;
@@ -473,8 +474,9 @@ void STDescManager::build_connection(
     if (iter->second->plane_ptr_->is_plane_) {
       OctoTree *current_octo = iter->second;
       for (int i = 0; i < 6; i++) {
+        // step1 获取最近邻体素
         VOXEL_LOC neighbor = iter->first;
-        if (i == 0) {
+        if (i == 0) {   // 取领域的点
           neighbor.x = neighbor.x + 1;
         } else if (i == 1) {
           neighbor.y = neighbor.y + 1;
@@ -493,6 +495,7 @@ void STDescManager::build_connection(
           current_octo->connect_[i] = false;
         } else {
           if (!current_octo->is_check_connect_[i]) {
+            // step2 将最近邻体素对应标记为已检查
             OctoTree *near_octo = near->second;
             current_octo->is_check_connect_[i] = true;
             int j;
@@ -504,6 +507,7 @@ void STDescManager::build_connection(
             near_octo->is_check_connect_[j] = true;
             if (near_octo->plane_ptr_->is_plane_) {
               // merge near octo
+              // step3 依据体素中平面法线关系判断是否为同一体素
               Eigen::Vector3d normal_diff = current_octo->plane_ptr_->normal_ -
                                             near_octo->plane_ptr_->normal_;
               Eigen::Vector3d normal_add = current_octo->plane_ptr_->normal_ +
@@ -558,7 +562,7 @@ void STDescManager::corner_extractor(
       new pcl::PointCloud<pcl::PointXYZINormal>);
 
   // Avoid inconsistent voxel cutting caused by different view point
-  std::vector<Eigen::Vector3i> voxel_round;
+  std::vector<Eigen::Vector3i> voxel_round;   // 周边格网
   for (int x = -1; x <= 1; x++) {
     for (int y = -1; y <= 1; y++) {
       for (int z = -1; z <= 1; z++) {
@@ -568,15 +572,18 @@ void STDescManager::corner_extractor(
     }
   }
   for (auto iter = voxel_map.begin(); iter != voxel_map.end(); iter++) {
+    // step1 从非平面体素开始进行领域搜索
     if (!iter->second->plane_ptr_->is_plane_) {
       VOXEL_LOC current_position = iter->first;
       OctoTree *current_octo = iter->second;
       int connect_index = -1;
       for (int i = 0; i < 6; i++) {
+        // step2 对于平面领域体素
         if (current_octo->connect_[i]) {
           connect_index = i;
           OctoTree *connect_octo = current_octo->connect_tree_[connect_index];
           bool use = false;
+          // step2.1 只有该平面体素周边还存在其他同一平面体素时，才进行处理
           for (int j = 0; j < 6; j++) {
             if (connect_octo->is_check_connect_[j]) {
               if (connect_octo->connect_[j]) {
@@ -588,14 +595,13 @@ void STDescManager::corner_extractor(
           if (use == false) {
             continue;
           }
-          // only project voxels with points num > 10
+          // step2.2 只有平面体素点数量大于10时才进行处理
           if (current_octo->voxel_points_.size() > 10) {
-            Eigen::Vector3d projection_normal =
-                current_octo->connect_tree_[connect_index]->plane_ptr_->normal_;
-            Eigen::Vector3d projection_center =
-                current_octo->connect_tree_[connect_index]->plane_ptr_->center_;
-            std::vector<Eigen::Vector3d> proj_points;
-            // proj the boundary voxel and nearby voxel onto adjacent plane
+            Eigen::Vector3d projection_normal = connect_octo->plane_ptr_->normal_;
+            Eigen::Vector3d projection_center = connect_octo->plane_ptr_->center_;
+            std::vector<Eigen::Vector3d> proj_points;   // 存储同一面上的所有点
+            
+            // step2.3 将9个voxel中所有非平面体素的点存储起来，并分别投影到周边平面体素表示的平面上
             for (auto voxel_inc : voxel_round) {
               VOXEL_LOC connect_project_position = current_position;
               connect_project_position.x += voxel_inc[0];
@@ -604,11 +610,9 @@ void STDescManager::corner_extractor(
               auto iter_near = voxel_map.find(connect_project_position);
               if (iter_near != voxel_map.end()) {
                 bool skip_flag = false;
-                if (!voxel_map[connect_project_position]
-                         ->plane_ptr_->is_plane_) {
+                if (!voxel_map[connect_project_position]->plane_ptr_->is_plane_) {
                   if (voxel_map[connect_project_position]->is_project_) {
-                    for (auto normal : voxel_map[connect_project_position]
-                                           ->proj_normal_vec_) {
+                    for (auto normal : voxel_map[connect_project_position]->proj_normal_vec_) {
                       Eigen::Vector3d normal_diff = projection_normal - normal;
                       Eigen::Vector3d normal_add = projection_normal + normal;
                       // check if repeated project
@@ -620,23 +624,18 @@ void STDescManager::corner_extractor(
                   if (skip_flag) {
                     continue;
                   }
-                  for (size_t j = 0; j < voxel_map[connect_project_position]
-                                             ->voxel_points_.size();
-                       j++) {
-                    proj_points.push_back(
-                        voxel_map[connect_project_position]->voxel_points_[j]);
-                    voxel_map[connect_project_position]->is_project_ = true;
-                    voxel_map[connect_project_position]
-                        ->proj_normal_vec_.push_back(projection_normal);
+                  for (size_t j = 0; j < voxel_map[connect_project_position]->voxel_points_.size();j++) {
+                    proj_points.push_back(voxel_map[connect_project_position]->voxel_points_[j]);
                   }
+                  voxel_map[connect_project_position]->is_project_ = true;
+                  voxel_map[connect_project_position]->proj_normal_vec_.push_back(projection_normal);
                 }
               }
             }
             // here do the 2D projection and corner extraction
-            pcl::PointCloud<pcl::PointXYZINormal>::Ptr sub_corner_points(
-                new pcl::PointCloud<pcl::PointXYZINormal>);
-            extract_corner(projection_center, projection_normal, proj_points,
-                           sub_corner_points);
+            // step2.4 关键点提取
+            pcl::PointCloud<pcl::PointXYZINormal>::Ptr sub_corner_points( new pcl::PointCloud<pcl::PointXYZINormal>);
+            extract_corner(projection_center, projection_normal, proj_points, sub_corner_points);
             for (auto pi : sub_corner_points->points) {
               prepare_corner_points->push_back(pi);
             }
@@ -645,11 +644,12 @@ void STDescManager::corner_extractor(
       }
     }
   }
-  non_maxi_suppression(prepare_corner_points);
+  // step3 非极大值抑制
+  non_maxi_suppression(prepare_corner_points);    // 非极大值抑制
 
   if (config_setting_.maximum_corner_num_ > prepare_corner_points->size()) {
     corner_points = prepare_corner_points;
-  } else {
+  } else {  // 如果关键点数大于阈值，则取包含原始三维点最多的前k个值
     std::vector<std::pair<double, int>> attach_vec;
     for (size_t i = 0; i < prepare_corner_points->size(); i++) {
       attach_vec.push_back(std::pair<double, int>(
@@ -667,7 +667,7 @@ void STDescManager::extract_corner(
     const Eigen::Vector3d &proj_center, const Eigen::Vector3d proj_normal,
     const std::vector<Eigen::Vector3d> proj_points,
     pcl::PointCloud<pcl::PointXYZINormal>::Ptr &corner_points) {
-
+  // step1 计算投影分辨率，平面参数 A(x-x0)+B(y-y0)+C(z-z0)=0
   double resolution = config_setting_.proj_image_resolution_;
   double dis_threshold_min = config_setting_.proj_dis_min_;
   double dis_threshold_max = config_setting_.proj_dis_max_;
@@ -675,6 +675,7 @@ void STDescManager::extract_corner(
   double B = proj_normal[1];
   double C = proj_normal[2];
   double D = -(A * proj_center[0] + B * proj_center[1] + C * proj_center[2]);
+  // step2 计算和normal垂直的两个向量
   Eigen::Vector3d x_axis(1, 1, 0);
   if (C != 0) {
     x_axis[2] = -(A + B) / C;
@@ -690,19 +691,19 @@ void STDescManager::extract_corner(
   double ax = x_axis[0];
   double bx = x_axis[1];
   double cx = x_axis[2];
-  double dx =
-      -(ax * proj_center[0] + bx * proj_center[1] + cx * proj_center[2]);
+  double dx = -(ax * proj_center[0] + bx * proj_center[1] + cx * proj_center[2]);
   double ay = y_axis[0];
   double by = y_axis[1];
   double cy = y_axis[2];
-  double dy =
-      -(ay * proj_center[0] + by * proj_center[1] + cy * proj_center[2]);
+  double dy = -(ay * proj_center[0] + by * proj_center[1] + cy * proj_center[2]);
+
+  // step3 计算投影点
   std::vector<Eigen::Vector2d> point_list_2d;
   for (size_t i = 0; i < proj_points.size(); i++) {
     double x = proj_points[i][0];
     double y = proj_points[i][1];
     double z = proj_points[i][2];
-    double dis = fabs(x * A + y * B + z * C + D);
+    double dis = fabs(x * A + y * B + z * C + D);   // 点到面距离
     if (dis < dis_threshold_min || dis > dis_threshold_max) {
       continue;
     }
@@ -714,10 +715,7 @@ void STDescManager::extract_corner(
                      (A * A + B * B + C * C);
     cur_project[2] = (-C * (A * x + B * y + D) + z * (A * A + B * B)) /
                      (A * A + B * B + C * C);
-    pcl::PointXYZ p;
-    p.x = cur_project[0];
-    p.y = cur_project[1];
-    p.z = cur_project[2];
+
     double project_x =
         cur_project[0] * ay + cur_project[1] * by + cur_project[2] * cy + dy;
     double project_y =
@@ -725,6 +723,8 @@ void STDescManager::extract_corner(
     Eigen::Vector2d p_2d(project_x, project_y);
     point_list_2d.push_back(p_2d);
   }
+
+  // step4 计算外包矩形
   double min_x = 10;
   double max_x = -10;
   double min_y = 10;
@@ -733,87 +733,45 @@ void STDescManager::extract_corner(
     return;
   }
   for (auto pi : point_list_2d) {
-    if (pi[0] < min_x) {
-      min_x = pi[0];
-    }
-    if (pi[0] > max_x) {
-      max_x = pi[0];
-    }
-    if (pi[1] < min_y) {
-      min_y = pi[1];
-    }
-    if (pi[1] > max_y) {
-      max_y = pi[1];
-    }
+    pi[0] < min_x ? min_x = pi[0] : min_x;
+    pi[0] > max_x ? max_x = pi[0] : max_x;
+    pi[1] < min_y ? min_y = pi[1] : min_y;
+    pi[1] > max_y ? max_y = pi[1] : max_y;
   }
+  
   // segment project cloud with a fixed resolution
+  // step5 初始化图像矩阵
   int segmen_base_num = 5;
   double segmen_len = segmen_base_num * resolution;
   int x_segment_num = (max_x - min_x) / segmen_len + 1;
   int y_segment_num = (max_y - min_y) / segmen_len + 1;
   int x_axis_len = (int)((max_x - min_x) / resolution + segmen_base_num);
   int y_axis_len = (int)((max_y - min_y) / resolution + segmen_base_num);
-  std::vector<Eigen::Vector2d> img_container[x_axis_len][y_axis_len];
-  double img_count_array[x_axis_len][y_axis_len] = {0};
-  double gradient_array[x_axis_len][y_axis_len] = {0};
-  double mean_x_array[x_axis_len][y_axis_len] = {0};
-  double mean_y_array[x_axis_len][y_axis_len] = {0};
-  for (int x = 0; x < x_axis_len; x++) {
-    for (int y = 0; y < y_axis_len; y++) {
-      img_count_array[x][y] = 0;
-      mean_x_array[x][y] = 0;
-      mean_y_array[x][y] = 0;
-      gradient_array[x][y] = 0;
-      std::vector<Eigen::Vector2d> single_container;
-      img_container[x][y] = single_container;
-    }
-  }
+  double img_count_array[x_axis_len][y_axis_len];   // 各格网中包含的点的数量
+  double mean_x_array[x_axis_len][y_axis_len];      // 各格网中包含的点的均值
+  double mean_y_array[x_axis_len][y_axis_len];
+  memset(img_count_array, 0, sizeof(img_count_array));
+  memset(mean_x_array, 0, sizeof(mean_x_array));
+  memset(mean_y_array, 0, sizeof(mean_y_array));
   for (size_t i = 0; i < point_list_2d.size(); i++) {
     int x_index = (int)((point_list_2d[i][0] - min_x) / resolution);
     int y_index = (int)((point_list_2d[i][1] - min_y) / resolution);
     mean_x_array[x_index][y_index] += point_list_2d[i][0];
     mean_y_array[x_index][y_index] += point_list_2d[i][1];
     img_count_array[x_index][y_index]++;
-    img_container[x_index][y_index].push_back(point_list_2d[i]);
   }
-  // calc gradient
-  for (int x = 0; x < x_axis_len; x++) {
-    for (int y = 0; y < y_axis_len; y++) {
-      double gradient = 0;
-      int cnt = 0;
-      int inc = 1;
-      for (int x_inc = -inc; x_inc <= inc; x_inc++) {
-        for (int y_inc = -inc; y_inc <= inc; y_inc++) {
-          int xx = x + x_inc;
-          int yy = y + y_inc;
-          if (xx >= 0 && xx < x_axis_len && yy >= 0 && yy < y_axis_len) {
-            if (xx != x || yy != y) {
-              if (img_count_array[xx][yy] >= 0) {
-                gradient += img_count_array[x][y] - img_count_array[xx][yy];
-                cnt++;
-              }
-            }
-          }
-        }
-      }
-      if (cnt != 0) {
-        gradient_array[x][y] = gradient * 1.0 / cnt;
-      } else {
-        gradient_array[x][y] = 0;
-      }
-    }
-  }
+
   // extract corner by gradient
+  // step6 提取关键点
   std::vector<int> max_gradient_vec;
   std::vector<int> max_gradient_x_index_vec;
   std::vector<int> max_gradient_y_index_vec;
-  for (int x_segment_index = 0; x_segment_index < x_segment_num;
-       x_segment_index++) {
-    for (int y_segment_index = 0; y_segment_index < y_segment_num;
-         y_segment_index++) {
+  for (int x_segment_index = 0; x_segment_index < x_segment_num; x_segment_index++) {
+    for (int y_segment_index = 0; y_segment_index < y_segment_num; y_segment_index++) {
       double max_gradient = 0;
       int max_gradient_x_index = -10;
       int max_gradient_y_index = -10;
+      // step6.1 获取5*5像素内包含点最多的像素
       for (int x_index = x_segment_index * segmen_base_num;
            x_index < (x_segment_index + 1) * segmen_base_num; x_index++) {
         for (int y_index = y_segment_index * segmen_base_num;
@@ -825,6 +783,7 @@ void STDescManager::extract_corner(
           }
         }
       }
+      // step6.2 包含点数大于阈值时将其视为特征点
       if (max_gradient >= config_setting_.corner_thre_) {
         max_gradient_vec.push_back(max_gradient);
         max_gradient_x_index_vec.push_back(max_gradient_x_index);
@@ -844,55 +803,38 @@ void STDescManager::extract_corner(
   d << 1, -1;
   direction_list.push_back(d);
   for (size_t i = 0; i < max_gradient_vec.size(); i++) {
-    bool is_add = true;
-    for (int j = 0; j < 4; j++) {
-      Eigen::Vector2i p(max_gradient_x_index_vec[i],
-                        max_gradient_y_index_vec[i]);
-      Eigen::Vector2i p1 = p + direction_list[j];
-      Eigen::Vector2i p2 = p - direction_list[j];
-      int threshold = img_count_array[p[0]][p[1]] / 2;
-      if (img_count_array[p1[0]][p1[1]] >= threshold &&
-          img_count_array[p2[0]][p2[1]] >= threshold) {
-        // is_add = false;
-      } else {
-        continue;
-      }
-    }
-    if (is_add) {
-      double px = mean_x_array[max_gradient_x_index_vec[i]]
-                              [max_gradient_y_index_vec[i]] /
-                  img_count_array[max_gradient_x_index_vec[i]]
-                                 [max_gradient_y_index_vec[i]];
-      double py = mean_y_array[max_gradient_x_index_vec[i]]
-                              [max_gradient_y_index_vec[i]] /
-                  img_count_array[max_gradient_x_index_vec[i]]
-                                 [max_gradient_y_index_vec[i]];
-      // reproject on 3D space
-      Eigen::Vector3d coord = py * x_axis + px * y_axis + proj_center;
-      pcl::PointXYZINormal pi;
-      pi.x = coord[0];
-      pi.y = coord[1];
-      pi.z = coord[2];
-      pi.intensity = max_gradient_vec[i];
-      pi.normal_x = proj_normal[0];
-      pi.normal_y = proj_normal[1];
-      pi.normal_z = proj_normal[2];
-      corner_points->points.push_back(pi);
-    }
+    // 均值
+    double px = mean_x_array[max_gradient_x_index_vec[i]]
+                            [max_gradient_y_index_vec[i]] /
+                img_count_array[max_gradient_x_index_vec[i]]
+                                [max_gradient_y_index_vec[i]];
+    double py = mean_y_array[max_gradient_x_index_vec[i]]
+                            [max_gradient_y_index_vec[i]] /
+                img_count_array[max_gradient_x_index_vec[i]]
+                                [max_gradient_y_index_vec[i]];
+    // reproject on 3D space
+    Eigen::Vector3d coord = py * x_axis + px * y_axis + proj_center;
+    pcl::PointXYZINormal pi;
+    pi.x = coord[0];
+    pi.y = coord[1];
+    pi.z = coord[2];
+    pi.intensity = max_gradient_vec[i];
+    pi.normal_x = proj_normal[0];
+    pi.normal_y = proj_normal[1];
+    pi.normal_z = proj_normal[2];
+    corner_points->points.push_back(pi);
   }
   return;
 }
 
-void STDescManager::non_maxi_suppression(
-    pcl::PointCloud<pcl::PointXYZINormal>::Ptr &corner_points) {
-  std::vector<bool> is_add_vec;
+void STDescManager::non_maxi_suppression( pcl::PointCloud<pcl::PointXYZINormal>::Ptr &corner_points) {
+  std::vector<bool> is_add_vec(corner_points->points.size(), true);
   pcl::PointCloud<pcl::PointXYZINormal>::Ptr prepare_key_cloud(
       new pcl::PointCloud<pcl::PointXYZINormal>);
-  pcl::KdTreeFLANN<pcl::PointXYZINormal> kd_tree;
   for (auto pi : corner_points->points) {
     prepare_key_cloud->push_back(pi);
-    is_add_vec.push_back(true);
   }
+  pcl::KdTreeFLANN<pcl::PointXYZINormal> kd_tree;
   kd_tree.setInputCloud(prepare_key_cloud);
   std::vector<int> pointIdxRadiusSearch;
   std::vector<float> pointRadiusSquaredDistance;
@@ -926,22 +868,22 @@ void STDescManager::non_maxi_suppression(
   return;
 }
 
-void STDescManager::build_stdesc(
-    const pcl::PointCloud<pcl::PointXYZINormal>::Ptr &corner_points,
-    std::vector<STDesc> &stds_vec) {
+void STDescManager::build_stdesc(const pcl::PointCloud<pcl::PointXYZINormal>::Ptr &corner_points, std::vector<STDesc> &stds_vec) {
   stds_vec.clear();
+  // step1 参数初始化
   double scale = 1.0 / config_setting_.std_side_resolution_;
   int near_num = config_setting_.descriptor_near_num_;
   double max_dis_threshold = config_setting_.descriptor_max_len_;
   double min_dis_threshold = config_setting_.descriptor_min_len_;
   std::unordered_map<VOXEL_LOC, bool> feat_map;
-  pcl::KdTreeFLANN<pcl::PointXYZINormal>::Ptr kd_tree(
-      new pcl::KdTreeFLANN<pcl::PointXYZINormal>);
+  pcl::KdTreeFLANN<pcl::PointXYZINormal>::Ptr kd_tree(new pcl::KdTreeFLANN<pcl::PointXYZINormal>);
   kd_tree->setInputCloud(corner_points);
   std::vector<int> pointIdxNKNSearch(near_num);
   std::vector<float> pointNKNSquaredDistance(near_num);
   // Search N nearest corner points to form stds.
+  // step2 描述子构建
   for (size_t i = 0; i < corner_points->size(); i++) {
+    // step2.1 最近邻搜索，构建三角描述子
     pcl::PointXYZINormal searchPoint = corner_points->points[i];
     if (kd_tree->nearestKSearch(searchPoint, near_num, pointIdxNKNSearch,
                                 pointNKNSquaredDistance) > 0) {
@@ -950,18 +892,7 @@ void STDescManager::build_stdesc(
           pcl::PointXYZINormal p1 = searchPoint;
           pcl::PointXYZINormal p2 = corner_points->points[pointIdxNKNSearch[m]];
           pcl::PointXYZINormal p3 = corner_points->points[pointIdxNKNSearch[n]];
-          Eigen::Vector3d normal_inc1(p1.normal_x - p2.normal_x,
-                                      p1.normal_y - p2.normal_y,
-                                      p1.normal_z - p2.normal_z);
-          Eigen::Vector3d normal_inc2(p3.normal_x - p2.normal_x,
-                                      p3.normal_y - p2.normal_y,
-                                      p3.normal_z - p2.normal_z);
-          Eigen::Vector3d normal_add1(p1.normal_x + p2.normal_x,
-                                      p1.normal_y + p2.normal_y,
-                                      p1.normal_z + p2.normal_z);
-          Eigen::Vector3d normal_add2(p3.normal_x + p2.normal_x,
-                                      p3.normal_y + p2.normal_y,
-                                      p3.normal_z + p2.normal_z);
+          // step2.2 计算三角形边长
           double a = sqrt(pow(p1.x - p2.x, 2) + pow(p1.y - p2.y, 2) +
                           pow(p1.z - p2.z, 2));
           double b = sqrt(pow(p1.x - p3.x, 2) + pow(p1.y - p3.y, 2) +
@@ -997,13 +928,13 @@ void STDescManager::build_stdesc(
             l2 = l3;
             l3 = l_temp;
           }
-          if (a > b) {
+          if (a > c) {
             temp = a;
-            a = b;
-            b = temp;
+            a = c;
+            c = temp;
             l_temp = l1;
-            l1 = l2;
-            l2 = l_temp;
+            l1 = l3;
+            l3 = l_temp;
           }
           // check augnmentation
           pcl::PointXYZ d_p;
@@ -1061,9 +992,9 @@ void STDescManager::build_stdesc(
             single_descriptor.center_ = (A + B + C) / 3;
             single_descriptor.vertex_attached_ = vertex_attached;
             single_descriptor.side_length_ << scale * a, scale * b, scale * c;
-            single_descriptor.angle_[0] = fabs(5 * normal_1.dot(normal_2));
-            single_descriptor.angle_[1] = fabs(5 * normal_1.dot(normal_3));
-            single_descriptor.angle_[2] = fabs(5 * normal_3.dot(normal_2));
+            // single_descriptor.angle_[0] = fabs(5 * normal_1.dot(normal_2));
+            // single_descriptor.angle_[1] = fabs(5 * normal_1.dot(normal_3));
+            // single_descriptor.angle_[2] = fabs(5 * normal_3.dot(normal_2));
             // single_descriptor.angle << 0, 0, 0;
             single_descriptor.frame_id_ = current_frame_id_;
             Eigen::Matrix3d triangle_positon;
@@ -1076,13 +1007,10 @@ void STDescManager::build_stdesc(
   }
 };
 
-void STDescManager::candidate_selector(
-    const std::vector<STDesc> &stds_vec,
-    std::vector<STDMatchList> &candidate_matcher_vec) {
-  double match_array[MAX_FRAME_N] = {0};
+void STDescManager::candidate_selector(const std::vector<STDesc> &stds_vec, std::vector<STDMatchList> &candidate_matcher_vec) {
+  // step1 初始化相关参数
   std::vector<std::pair<STDesc, STDesc>> match_vec;
-  std::vector<int> match_index_vec;
-  std::vector<Eigen::Vector3i> voxel_round;
+  std::vector<Eigen::Vector3i> voxel_round;     // 周边格网偏移量
   for (int x = -1; x <= 1; x++) {
     for (int y = -1; y <= 1; y++) {
       for (int z = -1; z <= 1; z++) {
@@ -1092,13 +1020,12 @@ void STDescManager::candidate_selector(
     }
   }
 
-  std::vector<bool> useful_match(stds_vec.size());
+  std::vector<bool> useful_match(stds_vec.size(), false);
   std::vector<std::vector<size_t>> useful_match_index(stds_vec.size());
   std::vector<std::vector<STDesc_LOC>> useful_match_position(stds_vec.size());
   std::vector<size_t> index(stds_vec.size());
   for (size_t i = 0; i < index.size(); ++i) {
     index[i] = i;
-    useful_match[i] = false;
   }
   // speed up matching
   int dis_match_cnt = 0;
@@ -1107,24 +1034,26 @@ void STDescManager::candidate_selector(
   omp_set_num_threads(MP_PROC_NUM);
 #pragma omp parallel for
 #endif
+  // step2 以三角描述子的边长为坐标，剔除不能用于匹配的描述子
   for (size_t i = 0; i < stds_vec.size(); i++) {
     STDesc src_std = stds_vec[i];
     STDesc_LOC position;
-    int best_index = 0;
-    STDesc_LOC best_position;
     double dis_threshold =
         src_std.side_length_.norm() * config_setting_.rough_dis_threshold_;
     for (auto voxel_inc : voxel_round) {
+      // step2.1 以三角描述子的边长为坐标构建voxel，获取领域voxel的索引，并计算该领域voxel中心点
       position.x = (int)(src_std.side_length_[0] + voxel_inc[0]);
       position.y = (int)(src_std.side_length_[1] + voxel_inc[1]);
       position.z = (int)(src_std.side_length_[2] + voxel_inc[2]);
       Eigen::Vector3d voxel_center((double)position.x + 0.5,
                                    (double)position.y + 0.5,
                                    (double)position.z + 0.5);
+      // step2.2 领域voxel中心与边长坐标在阈值内，才进行处理
       if ((src_std.side_length_ - voxel_center).norm() < 1.5) {
         auto iter = data_base_.find(position);
         if (iter != data_base_.end()) {
           for (size_t j = 0; j < data_base_[position].size(); j++) {
+            // step2.3 回环帧要距离一定的间隔，且两三角描述子边长在阈值内
             if ((src_std.frame_id_ - data_base_[position][j].frame_id_) >
                 config_setting_.skip_near_num_) {
               double dis =
@@ -1134,6 +1063,7 @@ void STDescManager::candidate_selector(
               if (dis < dis_threshold) {
                 dis_match_cnt++;
                 // rough filter with vertex attached info
+                // step2.4 通过三角描述子顶点在投影过程中使用到的点数，进一步筛选
                 double vertex_attach_diff =
                     2.0 *
                     (src_std.vertex_attached_ -
@@ -1162,8 +1092,10 @@ void STDescManager::candidate_selector(
   //           << ", final match num:" << final_match_cnt << std::endl;
 
   // record match index
-  std::vector<Eigen::Vector2i, Eigen::aligned_allocator<Eigen::Vector2i>>
-      index_recorder;
+  // step3 初始化一些参数，以便于匹配
+  double match_array[MAX_FRAME_N] = {0};      // 记录各frame的匹配次数
+  std::vector<int> match_index_vec;
+  std::vector<Eigen::Vector2i, Eigen::aligned_allocator<Eigen::Vector2i>> index_recorder;   // 记录帧间匹配情况
   for (size_t i = 0; i < useful_match.size(); i++) {
     if (useful_match[i]) {
       for (size_t j = 0; j < useful_match_index[i].size(); j++) {
@@ -1180,7 +1112,9 @@ void STDescManager::candidate_selector(
   }
 
   // select candidate according to the matching score
+  // step4: 存储候选匹配
   for (int cnt = 0; cnt < config_setting_.candidate_num_; cnt++) {
+    // step4.1 获取匹配次数最多的frame_id
     double max_vote = 1;
     int max_vote_index = -1;
     for (int i = 0; i < MAX_FRAME_N; i++) {
@@ -1191,6 +1125,7 @@ void STDescManager::candidate_selector(
     }
     STDMatchList match_triangle_list;
     if (max_vote_index >= 0 && max_vote >= 5) {
+      // step4.2 若匹配次数大于5，则存储此匹配为候选匹配
       match_array[max_vote_index] = 0;
       match_triangle_list.match_id_.first = current_frame_id_;
       match_triangle_list.match_id_.second = max_vote_index;
@@ -1218,8 +1153,9 @@ void STDescManager::candidate_verify(
     const STDMatchList &candidate_matcher, double &verify_score,
     std::pair<Eigen::Vector3d, Eigen::Matrix3d> &relative_pose,
     std::vector<std::pair<STDesc, STDesc>> &sucess_match_vec) {
+  // step1 初始化相关参数
   sucess_match_vec.clear();
-  int skip_len = (int)(candidate_matcher.match_list_.size() / 50) + 1;
+  int skip_len = (int)(candidate_matcher.match_list_.size() / 50) + 1;    // 
   int use_size = candidate_matcher.match_list_.size() / skip_len;
   double dis_threshold = 3.0;
   std::vector<size_t> index(use_size);
@@ -1233,12 +1169,15 @@ void STDescManager::candidate_verify(
   omp_set_num_threads(MP_PROC_NUM);
 #pragma omp parallel for
 #endif
+  // step2 回环分数计算
   for (size_t i = 0; i < use_size; i++) {
     auto single_pair = candidate_matcher.match_list_[i * skip_len];
     int vote = 0;
     Eigen::Matrix3d test_rot;
     Eigen::Vector3d test_t;
+    // step2.2 计算旋转平移变化量
     triangle_solver(single_pair, test_t, test_rot);
+    // step2.3 计算当前两帧中，对应三角描述子变换后的顶点坐标距离
     for (size_t j = 0; j < candidate_matcher.match_list_.size(); j++) {
       auto verify_pair = candidate_matcher.match_list_[j];
       Eigen::Vector3d A = verify_pair.first.vertex_A_;
@@ -1259,6 +1198,7 @@ void STDescManager::candidate_verify(
     vote_list[i] = vote;
     mylock.unlock();
   }
+  // step3 获取最大回环分数
   int max_vote_index = 0;
   int max_vote = 0;
   for (size_t i = 0; i < vote_list.size(); i++) {
@@ -1267,6 +1207,7 @@ void STDescManager::candidate_verify(
       max_vote = vote_list[i];
     }
   }
+  // step4 确定回环
   if (max_vote >= 4) {
     auto best_pair = candidate_matcher.match_list_[max_vote_index * skip_len];
     int vote = 0;
@@ -1291,6 +1232,7 @@ void STDescManager::candidate_verify(
         sucess_match_vec.push_back(verify_pair);
       }
     }
+    // step4.2 验证回环的正确性
     verify_score = plane_geometric_verify(
         plane_cloud_vec_.back(),
         plane_cloud_vec_[candidate_matcher.match_id_.second], relative_pose);
@@ -1303,12 +1245,14 @@ void STDescManager::triangle_solver(std::pair<STDesc, STDesc> &std_pair,
                                     Eigen::Vector3d &t, Eigen::Matrix3d &rot) {
   Eigen::Matrix3d src = Eigen::Matrix3d::Zero();
   Eigen::Matrix3d ref = Eigen::Matrix3d::Zero();
+  // step1 计算以三角形中心为原点的三角形顶点坐标
   src.col(0) = std_pair.first.vertex_A_ - std_pair.first.center_;
   src.col(1) = std_pair.first.vertex_B_ - std_pair.first.center_;
   src.col(2) = std_pair.first.vertex_C_ - std_pair.first.center_;
   ref.col(0) = std_pair.second.vertex_A_ - std_pair.second.center_;
   ref.col(1) = std_pair.second.vertex_B_ - std_pair.second.center_;
   ref.col(2) = std_pair.second.vertex_C_ - std_pair.second.center_;
+  // step2 svd分解获取两者旋转平移变化量
   Eigen::Matrix3d covariance = src * ref.transpose();
   Eigen::JacobiSVD<Eigen::MatrixXd> svd(covariance, Eigen::ComputeThinU |
                                                         Eigen::ComputeThinV);

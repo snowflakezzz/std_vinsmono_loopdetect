@@ -64,18 +64,18 @@ typedef struct STDesc {
   Eigen::Vector3d side_length_;
 
   // projection angle between vertices
-  Eigen::Vector3d angle_;
+  // Eigen::Vector3d angle_;
 
   Eigen::Vector3d center_;
   unsigned int frame_id_;
 
-  // three vertexs
+  // three vertexs 三角形顶点
   Eigen::Vector3d vertex_A_;
   Eigen::Vector3d vertex_B_;
   Eigen::Vector3d vertex_C_;
 
   // some other inform attached to each vertex,e.g., intensity
-  Eigen::Vector3d vertex_attached_;
+  Eigen::Vector3d vertex_attached_;     // 三角形三个角点在特征点提取时包含的投影点数量
 } STDesc;
 
 // plane structure for corner point extraction
@@ -95,7 +95,7 @@ typedef struct Plane {
 
 typedef struct STDMatchList {
   std::vector<std::pair<STDesc, STDesc>> match_list_;
-  std::pair<int, int> match_id_;
+  std::pair<int, int> match_id_;    // 记录帧id1 与帧id1匹配最多的帧id2
   double mean_dis_;
 } STDMatchList;
 
@@ -130,11 +130,11 @@ template <> struct std::hash<VOXEL_LOC> {
 
 class STDesc_LOC {
 public:
-  int64_t x, y, z, a, b, c;
+  int64_t x, y, z;//, a, b, c;
 
   STDesc_LOC(int64_t vx = 0, int64_t vy = 0, int64_t vz = 0, int64_t va = 0,
              int64_t vb = 0, int64_t vc = 0)
-      : x(vx), y(vy), z(vz), a(va), b(vb), c(vc) {}
+      : x(vx), y(vy), z(vz) {};//, a(va), b(vb), c(vc) {}
 
   bool operator==(const STDesc_LOC &other) const {
     // use three attributes
@@ -168,7 +168,7 @@ template <> struct std::hash<STDesc_LOC> {
 class OctoTree {
 public:
   ConfigSetting config_setting_;
-  std::vector<Eigen::Vector3d> voxel_points_;
+  std::vector<Eigen::Vector3d> voxel_points_;   // 存储体素内的所有点
   Plane *plane_ptr_;
   int layer_;
   int octo_state_; // 0 is end of tree, 1 is not
@@ -177,9 +177,9 @@ public:
   std::vector<Eigen::Vector3d> proj_normal_vec_;
 
   // check 6 direction: x,y,z,-x,-y,-z
-  bool is_check_connect_[6];
-  bool connect_[6];
-  OctoTree *connect_tree_[6];
+  bool is_check_connect_[6];    // 是否检查过对应邻接体素
+  bool connect_[6];             // 对应邻接体素是否和当前体素为同一面，若当前体素不为面则存储对应邻接体素是否为面
+  OctoTree *connect_tree_[6];   // 存储邻接体素的指针
 
   bool is_publish_ = false;
   OctoTree *leaves_[8];
@@ -202,7 +202,7 @@ public:
     }
     plane_ptr_ = new Plane;
   }
-  void init_plane();
+  void init_plane();        // 平面提取
   void init_octo_tree();
 };
 
@@ -283,10 +283,10 @@ public:
   // save all key clouds, optional
   std::vector<pcl::PointCloud<pcl::PointXYZI>::Ptr> key_cloud_vec_;
 
-  // save all corner points, optional
+  // save all corner points, optional 各帧所有关键点
   std::vector<pcl::PointCloud<pcl::PointXYZINormal>::Ptr> corner_cloud_vec_;
 
-  // save all planes of key frame, required
+  // save all planes of key frame, required 各帧所有标记为平面的体素中心点
   std::vector<pcl::PointCloud<pcl::PointXYZINormal>::Ptr> plane_cloud_vec_;
 
   /*Three main processing functions*/

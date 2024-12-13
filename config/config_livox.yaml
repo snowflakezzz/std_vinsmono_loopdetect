@@ -17,11 +17,11 @@ descriptor_near_num: 15
 descriptor_min_len: 2
 descriptor_max_len: 30
 non_max_suppression_radius: 2
-std_side_resolution: 0.2
+std_side_resolution: 0.2          # 三角描述子边长分辨率，越小则边长尺度因子越大
 
 # candidate search
-skip_near_num: 50
-candidate_num: 50
+skip_near_num: 50                 # 回环要间隔的最少帧数
+candidate_num: 50                 # 候选回环帧数
 sub_frame_num: 10
 vertex_diff_threshold: 0.8
 rough_dis_threshold: 0.015
